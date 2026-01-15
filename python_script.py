@@ -4,8 +4,8 @@ import os
 import tempfile
 from google import genai
 from google.genai import types
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+##from reportlab.lib.pagesizes import letter
+##from reportlab.pdfgen import canvas
 from io import BytesIO
 
 # --- Configuration & Styles ---
