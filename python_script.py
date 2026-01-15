@@ -2,6 +2,8 @@ import streamlit as st
 import json
 import os
 import tempfile
+import time  # Added for retry delay
+import random  # Added for randomized backoff
 from google import genai
 from google.genai import types
 from reportlab.lib.pagesizes import letter
@@ -54,7 +56,8 @@ def create_pdf(json_data):
     return buffer
 
 def process_images(credential_file, image_files):
-    """Main logic to call Gemini API."""
+    """Main logic to call Gemini API with Retry Logic."""
+    tmp_cred_path = None
     try:
         # 1. Setup Credentials
         with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp_cred:
@@ -109,24 +112,48 @@ def process_images(credential_file, image_files):
         
         contents.append(voter_id_extraction_prompt)
 
-        # 4. Generate Content
+        # 4. Generate Content with Retry Logic
         generate_config = types.GenerateContentConfig(
             temperature=0,
             max_output_tokens=4096
         )
 
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-exp", # Updated to a valid model name or keep gemini-1.5-flash
-            contents=contents,
-            config=generate_config
-        )
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Switched to stable model 'gemini-1.5-flash' to avoid 429 errors
+                response = client.models.generate_content(
+                    model="gemini-1.5-flash", 
+                    contents=contents,
+                    config=generate_config
+                )
+                
+                # Success! Clean up and return
+                if tmp_cred_path and os.path.exists(tmp_cred_path):
+                    os.unlink(tmp_cred_path)
+                return response.text
 
-        os.unlink(tmp_cred_path)
-        return response.text
+            except Exception as e:
+                error_str = str(e)
+                # Check for rate limit error (429)
+                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                    if attempt < max_retries - 1:
+                        # Exponential backoff: sleep 2s, 4s, 8s...
+                        wait_time = (2 ** attempt) + random.uniform(0, 1)
+                        st.warning(f"Quota hit. Retrying in {wait_time:.1f} seconds... (Attempt {attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                
+                # If it's not a 429 or we ran out of retries, raise the error
+                raise e
 
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
-        if os.path.exists(tmp_cred_path):
+        # Check if the error is specifically about quota to give a helpful hint
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            st.info("Tip: This error usually means your Google Cloud project has exceeded its free/daily quota. Try again later or enable billing on your Google Cloud project.")
+        
+        if tmp_cred_path and os.path.exists(tmp_cred_path):
             os.unlink(tmp_cred_path)
         return None
 
@@ -182,13 +209,12 @@ def main_app():
         elif not uploaded_images or len(uploaded_images) > 2:
             st.warning("Please upload exactly 1 or 2 images.")
         else:
-            with st.spinner("Processing images with Gemini..."):
+            with st.spinner("Processing images with Gemini (1.5 Flash)..."):
                 raw_response = process_images(cred_file, uploaded_images)
                 
                 if raw_response:
                     cleaned_text = clean_json_response(raw_response)
                     try:
-                        # Store in session state to persist across reruns
                         st.session_state.extracted_data = json.loads(cleaned_text)
                         st.success("Extraction Complete!")
                     except json.JSONDecodeError:
@@ -232,7 +258,6 @@ def main_app():
 
         st.markdown("---")
         
-        # Generate PDF from CURRENT (possibly edited) data
         pdf_buffer = create_pdf(st.session_state.extracted_data)
         
         st.download_button(
