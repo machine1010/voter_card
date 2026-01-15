@@ -6,14 +6,18 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from io import BytesIO
 
-# --- Import Standard Vertex AI SDK ---
-import vertexai
-from vertexai.generative_models import GenerativeModel, Part
+# --- Try Import Vertex AI (Handle missing library gracefully) ---
+try:
+    import vertexai
+    from vertexai.generative_models import GenerativeModel, Part
+except ImportError:
+    st.error("⚠️ Library missing: 'google-cloud-aiplatform'. Please install it using: pip install google-cloud-aiplatform")
+    st.stop()
 
 # --- Configuration & Styles ---
 st.set_page_config(page_title="Voter ID Extractor", layout="wide", page_icon="🆔")
 
-# Custom CSS for form look
+# Custom CSS
 st.markdown("""
 <style>
     div[data-testid="stTextInput"] input {
@@ -140,7 +144,6 @@ def process_images_vertex(credential_file, image_files, project_id, location, mo
         
         # Add Images
         for img_file in image_files:
-            # Vertex AI expects raw bytes for Part.from_data
             image_bytes = img_file.getvalue()
             parts.append(Part.from_data(image_bytes, mime_type=img_file.type))
 
@@ -184,22 +187,29 @@ def main():
 
     # Login
     if not st.session_state.logged_in:
+        # FIX: Ensure we pass a list of ratios to st.columns
         c1, c2, c3 = st.columns()[3][1]
         with c2:
             st.title("🔐 Login")
             with st.form("login"):
-                if st.form_submit_button("Login"): # Simplified login for testing
-                    st.session_state.logged_in = True
-                    st.rerun()
+                user = st.text_input("Username")
+                password = st.text_input("Password", type="password")
+                
+                if st.form_submit_button("Login"):
+                    if user == DUMMY_USER and password == DUMMY_PASS:
+                        st.session_state.logged_in = True
+                        st.rerun()
+                    else:
+                        st.error("Invalid credentials")
         return
 
     # Sidebar Config
     st.sidebar.title("⚙️ Setup")
     creds_file = st.sidebar.file_uploader("Service Account JSON", type=["json"])
     
-    # Region and Model Selection (Crucial for fixing 404s)
+    # Region and Model Selection
     location = st.sidebar.selectbox("Region", ["us-central1", "us-east4", "asia-south1"], index=0)
-    model_name = st.sidebar.selectbox("Model", ["gemini-1.5-flash-001", "gemini-1.5-pro-001", "gemini-1.0-pro-vision-001"], index=0)
+    model_name = st.sidebar.selectbox("Model", ["gemini-1.5-flash-001", "gemini-1.5-pro-001"], index=0)
 
     st.title("🆔 Voter ID Extractor")
     
@@ -208,10 +218,9 @@ def main():
     if uploaded_files and creds_file:
         if st.button("🚀 Extract Data", type="primary"):
             
-            # Extract Project ID from JSON file for the init call
+            # Extract Project ID
             try:
                 creds_data = json.load(creds_file)
-                # Reset file pointer for temp file creation
                 creds_file.seek(0)
                 project_id = creds_data.get("project_id")
             except:
