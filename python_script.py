@@ -11,7 +11,7 @@ from io import BytesIO
 # --- Configuration & Styles ---
 st.set_page_config(page_title="Voter ID Extractor", layout="wide", page_icon="🆔")
 
-# Custom CSS to make inputs look like a static form (optional polish)
+# Custom CSS to make inputs look like a static form
 st.markdown("""
 <style>
     div[data-testid="stTextInput"] input {
@@ -59,7 +59,9 @@ def create_pdf(json_data):
     # Iterate and print fields
     for key, value in json_data.items():
         display_key = key.replace("_", " ").title()
-        text = f"{display_key}: {value}"
+        # Handle None or empty values gracefully for PDF
+        display_value = str(value) if value else "N/A"
+        text = f"{display_key}: {display_value}"
         
         # Check for page wrap
         if y_position < 50:
@@ -124,6 +126,7 @@ def display_voter_form(data):
 
 def process_images(credential_file, image_files):
     """Main logic to call Gemini API."""
+    tmp_cred_path = None
     try:
         # 1. Setup Credentials
         with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp_cred:
@@ -143,6 +146,8 @@ def process_images(credential_file, image_files):
             return None
 
         # Initialize Client
+        # Note: location='us-central1' is standard. 
+        # If your project is in a different region (e.g., 'asia-south1'), change it here.
         client = genai.Client(
             vertexai=True,
             project=project_id,
@@ -185,20 +190,22 @@ def process_images(credential_file, image_files):
         contents.append(voter_id_extraction_prompt)
 
         # 4. Generate Content
-        # Using gemini-1.5-flash for speed, or switch to pro for accuracy
+        # FIX: Changed model to 'gemini-1.5-flash' (removed -001 to resolve 404 error)
         response = client.models.generate_content(
-            model='gemini-1.5-flash-001', 
+            model='gemini-1.5-flash', 
             contents=contents
         )
-        
-        # Cleanup temp file
-        os.remove(tmp_cred_path)
         
         return response.text
 
     except Exception as e:
-        st.error(f"Error processing images: {str(e)}")
+        st.error(f"Error details: {str(e)}")
+        st.warning("Ensure the 'Vertex AI API' is enabled in your Google Cloud Console for this project.")
         return None
+    finally:
+        # Cleanup temp file
+        if tmp_cred_path and os.path.exists(tmp_cred_path):
+            os.remove(tmp_cred_path)
 
 # --- Main App Logic ---
 
