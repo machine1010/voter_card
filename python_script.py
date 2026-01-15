@@ -210,47 +210,188 @@ def main_app():
     start_process = st.button("Start Extraction Process", type="primary")
 
     if start_process:
-        if not cred_file:
-            st.warning("Please upload the credential JSON file.")
-        elif not uploaded_images or len(uploaded_images) > 2:
-            st.warning("Please upload exactly 1 or 2 images.")
-        else:
-            with st.spinner("Processing images with Gemini..."):
-                raw_response = process_images(cred_file, uploaded_images)
-                
-                if raw_response:
-                    cleaned_text = clean_json_response(raw_response)
-                    try:
-                        json_data = json.loads(cleaned_text)
+    if not cred_file:
+        st.warning("Please upload the credential JSON file.")
+    elif not uploaded_images or len(uploaded_images) > 2:
+        st.warning("Please upload exactly 1 or 2 images.")
+    else:
+        with st.spinner("Processing images with Gemini..."):
+            raw_response = process_images(cred_file, uploaded_images)
+            
+            if raw_response:
+                cleaned_text = clean_json_response(raw_response)
+                try:
+                    json_data = json.loads(cleaned_text)
+                    
+                    st.success("✅ Extraction Complete!")
+                    
+                    # ========================================
+                    # NEW USER-FRIENDLY FORM DISPLAY
+                    # ========================================
+                    st.markdown("---")
+                    st.markdown("## 🔍 **Verify Extracted Voter Details**")
+                    st.markdown("*Edit if needed and approve for download*")
+                    
+                    # Create form container
+                    with st.container():
+                        # Row 1: Election Number + Name
+                        col1, col2 = st.columns([1.2, 1.8])
                         
-                        st.success("Extraction Complete!")
+                        with col1:
+                            st.markdown("**📄 Election Number** *")
+                            election_number = st.text_input(
+                                "",
+                                value=json_data.get("election_number", "SVF9770827"),
+                                key="election_num_input",
+                                placeholder="Enter EPIC Number"
+                            )
                         
-                        # Display Data in User Friendly Form
-                        st.subheader("Extracted Details")
-                        st.json(json_data)
+                        with col2:
+                            st.markdown("**👤 Voter Name** *")
+                            voter_name = st.text_input(
+                                "",
+                                value=json_data.get("name", "RAM BISWAL BISWAL"),
+                                key="voter_name_input",
+                                placeholder="Enter Full Name"
+                            )
                         
-                        # Generate PDF
-                        pdf_buffer = create_pdf(json_data)
+                        # Row 2: Relation + Gender + DOB
+                        col_rel, col_gender, col_dob = st.columns([1.5, 0.8, 1.2])
                         
-                        st.download_button(
-                            label="Download as PDF",
-                            data=pdf_buffer,
-                            file_name="voter_id_card.pdf",
-                            mime="application/pdf"
+                        with col_rel:
+                            st.markdown("**👨‍👩‍👧 Relation Name**")
+                            relation_name = st.text_input(
+                                "",
+                                value=json_data.get("relation_name", "SWIKRUTI DHAL DHAL"),
+                                key="relation_input",
+                                placeholder="Father/Husband/Wife Name"
+                            )
+                        
+                        with col_gender:
+                            st.markdown("**⚧️ Gender** *")
+                            gender_options = ["Male", "Female", "Other"]
+                            selected_gender = st.selectbox(
+                                "",
+                                gender_options,
+                                index=gender_options.index(json_data.get("gender", "Male")),
+                                key="gender_input"
+                            )
+                        
+                        with col_dob:
+                            st.markdown("**🎂 Date of Birth** *")
+                            date_of_birth = st.text_input(
+                                "",
+                                value=json_data.get("date_of_birth", "28-05-1986"),
+                                key="dob_input",
+                                placeholder="DD-MM-YYYY"
+                            )
+                        
+                        # Address Section
+                        st.markdown("---")
+                        st.markdown("**🏠 Address Details**")
+                        
+                        address_cols = st.columns([2.5, 1, 1, 0.8])
+                        
+                        full_address = st.text_area(
+                            "Complete Address",
+                            value=json_data.get("address", "001, GUNJUR, BANGALORE EAST, GUNJUR, BANGALORE URBAN, KARNATAKA-560087"),
+                            height=60,
+                            key="address_input",
+                            help="Full address as per Voter ID"
                         )
                         
-                    except json.JSONDecodeError:
-                        st.error("Failed to parse the response as JSON.")
-                        st.text_area("Raw Response", raw_response)
-
-# --- Entry Point ---
-
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if not st.session_state.logged_in:
-    login_screen()
-    # Hint for the user
-    st.info(f"Use dummy credentials: {DUMMY_USER} / {DUMMY_PASS}")
-else:
-    main_app()
+                        with address_cols[0]:
+                            pass  # Spacer
+                        with address_cols[1]:
+                            city = st.text_input(
+                                "City",
+                                value=json_data.get("city", "BANGALORE"),
+                                key="city_input"
+                            )
+                        with address_cols[2]:
+                            state = st.text_input(
+                                "State",
+                                value=json_data.get("state", "KARNATAKA"),
+                                key="state_input"
+                            )
+                        with address_cols[3]:
+                            pincode = st.text_input(
+                                "Pincode",
+                                value=json_data.get("pincode", "560087"),
+                                key="pincode_input"
+                            )
+                        
+                        # Additional Info
+                        st.markdown("**📋 Additional Information**")
+                        add_col1, add_col2 = st.columns([2, 1])
+                        
+                        with add_col1:
+                            ero = st.text_input(
+                                "Electoral Registration Officer",
+                                value=json_data.get("electoral_registration_officer", "Electoral Registration Officer, 174 Mahadevapura (SC)"),
+                                key="ero_input"
+                            )
+                        
+                        with add_col2:
+                            issue_date = st.text_input(
+                                "Issue Date",
+                                value=json_data.get("issue_date", "21-04-2023"),
+                                placeholder="DD-MM-YYYY",
+                                key="issue_date_input"
+                            )
+                        
+                        # Action Buttons
+                        st.markdown("---")
+                        col_approve, col_reset, col_raw = st.columns([1, 1, 1])
+                        
+                        with col_approve:
+                            if st.button("✅ **APPROVE & DOWNLOAD PDF**", type="primary", use_container_width=True):
+                                # Collect all edited data
+                                verified_data = {
+                                    "election_number": election_number,
+                                    "name": voter_name,
+                                    "relation_name": relation_name,
+                                    "gender": selected_gender,
+                                    "date_of_birth": date_of_birth,
+                                    "address": full_address,
+                                    "city": city,
+                                    "state": state,
+                                    "pincode": pincode,
+                                    "electoral_registration_officer": ero,
+                                    "issue_date": issue_date
+                                }
+                                
+                                # Generate and download PDF
+                                pdf_buffer = create_pdf(verified_data)
+                                st.download_button(
+                                    label="📥 Download PDF Report",
+                                    data=pdf_buffer.getvalue(),
+                                    file_name="verified_voter_id_report.pdf",
+                                    mime="application/pdf",
+                                    use_container_width=True
+                                )
+                                
+                                # JSON Download
+                                json_str = json.dumps(verified_data, indent=2)
+                                st.download_button(
+                                    label="💾 Download JSON",
+                                    data=json_str,
+                                    file_name="verified_voter_id.json",
+                                    mime="application/json",
+                                    use_container_width=True
+                                )
+                                
+                                st.balloons()
+                                st.success("✅ **Report generated successfully!**")
+                        
+                        with col_reset:
+                            if st.button("🔄 Re-extract", use_container_width=True):
+                                st.rerun()
+                        
+                        with col_raw:
+                            if st.button("📋 Show Raw JSON", use_container_width=True):
+                                st.code(json.dumps(json_data, indent=2))
+                                
+                except json.JSONDecodeError:
+                    st.error("❌ Failed to parse Gemini response as JSON.")
+                    st.text_area("Raw Response:", raw_response)
