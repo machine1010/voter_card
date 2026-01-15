@@ -2,25 +2,31 @@ import streamlit as st
 import json
 import os
 import tempfile
-from google import genai
-from google.genai import types
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
 from io import BytesIO
 
-# --- Configuration & Styles ---
-st.set_page_config(page_title="Voter ID Extractor", layout="wide")
+# ReportLab imports for PDF generation
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
-# --- Constants ---
+# Google Gemini imports
+from google import genai
+from google.genai import types
+
+# Page configuration
+st.set_page_config(
+    page_title="Voter ID Extractor", 
+    page_icon="🆔",
+    layout="wide"
+)
+
+# Constants
 DUMMY_USER = "admin"
 DUMMY_PASS = "password123"
 
-# --- Helper Functions ---
-
+# Helper Functions
 def clean_json_response(text):
-    """Cleans the raw text response from Gemini to ensure valid JSON."""
+    """Clean Gemini response to valid JSON."""
     text = text.strip()
-    # Remove markdown code blocks if present
     if text.startswith("```json"):
         text = text[7:]
     if text.startswith("```"):
@@ -30,330 +36,246 @@ def clean_json_response(text):
     return text.strip()
 
 def create_pdf(json_data):
-    """Generates a PDF file from the JSON data."""
+    """Generate PDF from voter data."""
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
     
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, height - 50, "Voter ID Extraction Report")
-    
+    # Title
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(50, height - 60, "🆔 Voter ID Extraction Report")
     c.setFont("Helvetica", 12)
-    y_position = height - 80
+    c.drawString(50, height - 85, "Verified Details from EPIC Card")
     
-    for key, value in json_data.items():
-        # Format key for display (e.g., "election_number" -> "Election Number")
-        display_key = key.replace("_", " ").title()
-        text = f"{display_key}: {value}"
+    y_position = height - 110
+    fields = [
+        ("Election Number", json_data.get("election_number", "")),
+        ("Voter Name", json_data.get("name", "")),
+        ("Relation Name", json_data.get("relation_name", "")),
+        ("Gender", json_data.get("gender", "")),
+        ("Date of Birth", json_data.get("date_of_birth", "")),
+        ("Address", json_data.get("address", "")),
+        ("City", json_data.get("city", "")),
+        ("State", json_data.get("state", "")),
+        ("Pincode", json_data.get("pincode", "")),
+        ("ERO", json_data.get("electoral_registration_officer", "")),
+        ("Issue Date", json_data.get("issue_date", ""))
+    ]
+    
+    for label, value in fields:
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(50, y_position, f"{label}:")
+        c.setFont("Helvetica", 10)
+        text = str(value)[:80]  # Truncate long text
+        c.drawString(150, y_position, text)
+        y_position -= 22
         
-        # Simple text wrapping or truncation could be added here for very long lines
-        c.drawString(50, y_position, text)
-        y_position -= 20
-        
-        if y_position < 50: # New page if needed
+        if y_position < 60:
             c.showPage()
-            y_position = height - 50
-            
+            y_position = height - 60
+    
     c.save()
     buffer.seek(0)
     return buffer
 
 def process_images(credential_file, image_files):
-    """Main logic to call Gemini API."""
+    """Extract voter info using Gemini API."""
     try:
-        # 1. Setup Credentials
+        # Setup credentials
         with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp_cred:
             tmp_cred.write(credential_file.getvalue())
             tmp_cred_path = tmp_cred.name
         
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = tmp_cred_path
         
-        # Initialize Client (Assuming Project ID is inside the JSON or env)
-        # We attempt to load the project ID from the JSON for robustness, 
-        # or rely on default google auth behavior
+        # Load project ID from credentials
         with open(tmp_cred_path, "r") as f:
             creds = json.load(f)
-            project_id = creds.get("project_id") or creds.get("quota_project_id")
+            project_id = creds.get("project_id") or creds.get("quota_project_id", "gen-lang-client-0155506887")
 
-        client = genai.Client(
-            vertexai=True,
-            project=project_id,
-            location="us-central1" 
-        )
-
-        # 2. Prepare Images
+        # Initialize client
+        client = genai.Client(vertexai=True, project=project_id, location="us-central1")
+        
+        # Prepare images
         contents = []
         for img_file in image_files:
             image_bytes = img_file.getvalue()
-            image_part = types.Part.from_bytes(
-                data=image_bytes,
-                mime_type=img_file.type
-            )
+            image_part = types.Part.from_bytes(data=image_bytes, mime_type=img_file.type)
             contents.append(image_part)
-
-        # 3. Prepare Prompt (Copied from original script)
-        voter_id_extraction_prompt = '''
-        You are an expert OCR and document analysis specialist with deep knowledge of Indian electoral documents, including voter ID cards (EPIC - Elector's Photo Identity Card) issued by the Election Commission of India. You are highly skilled at extracting structured information from images containing text in multiple Indian languages including English, Hindi, Kannada, Telugu, Tamil, Malayalam, Bengali, Gujarati, Marathi, and others.
-
-        ## Your Task
-        Carefully analyze the provided voter ID card image(s) and extract specific information fields. You will receive one or two images - typically a front side and a back side of the voter ID card.
-
-        ## Critical Instructions
-        1. **No Hallucination**: Extract ONLY the information that is clearly visible and readable in the image. Do not infer, guess, or make up any information.
-        2. **Handle Missing Information**: If any field is not present, not readable, or not visible in the image, return an empty string ("") for that field.
-        3. **Language Preference**:
-        - If information is available in both English and a regional language, extract the English version
-        - If only regional language is present, extract in that regional language exactly as written
-        - Maintain the original script (Devanagari, Kannada, Telugu, etc.)
-        4. **Field Location Awareness**:
-        - Election Number/EPIC Number: Usually found above or near the photograph on the front side, often in format like "ABC1234567" or "ABC/12/123/123456"
-        - Name, Wife's/Husband's Name, Gender, Date of Birth: Typically on the front side
-        - Address: Can be on front or back side
-        - Electoral Registration Officer: Usually on back side
-        - Issue Date: Usually on back side
-        5. **Output Format**: Return ONLY a valid JSON object with the exact structure shown below. Do not include any explanatory text before or after the JSON.
-
-        ## Fields to Extract
-        1. **election_number**: The unique EPIC number (also called Elector's Photo Identity Card number). Often written above the photo or in a prominent position.
-        2. **name**: Full name of the voter as written on the card
-        3. **relation_name**: Name of father/husband/wife/mother (the relation type may vary - extract the name that appears after "Father's Name", "Husband's Name", "Wife's Name", or similar labels)
-        4. **gender**: Gender of the voter (Male/Female/Transgender or ಪುರುಷ/ಮಹಿಳೆ or other regional language equivalents)
-        5. **date_of_birth**: Date of birth in the format shown on the card (usually DD-MM-YYYY)
-        6. **address**: Complete address as written on the card
-        6.1 **city**: City where the address is mentioned
-        6.2 **state**: State where the address is mentioned
-        6.3 **pincode**: Pincode where the address is mentioned
-        7. **electoral_registration_officer**: Name/designation of the Electoral Registration Officer
-        8. **issue_date**: Date when the card was issued (usually found on back side)
-
-        ## Expected JSON Output Structure
-        {
-        "election_number": "SVF5418760",
-        "name": "AVINASH KUMAR",
-        "relation_name": "SAIKIT KUMAR(father)",
-        "gender": "Male",
-        "date_of_birth": "28-06-1998",
-        "address": "001, BANGALORE WEST, MARATHALLI VILLEGE -560087",
-        "city": "BANGALORE",
-        "state": "Karnataka",
-        "pincode": "560087",
-        "electoral_registration_officer": "Electoral Registration Officer, 174 Mahadevapura (SC)",
-        "issue_date": "21-04-2024"
-        }
-        '''
         
-        contents.append(voter_id_extraction_prompt)
+        # Voter ID extraction prompt
+        voter_prompt = '''You are an expert OCR specialist for Indian Voter ID cards. Extract ONLY visible text. Return JSON only.
 
-        # 4. Generate Content
-        generate_config = types.GenerateContentConfig(
-            temperature=0,
-            max_output_tokens=4096
-        )
-
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contents,
-            config=generate_config
-        )
-
+Expected fields: election_number, name, relation_name, gender, date_of_birth, address, city, state, pincode, electoral_registration_officer, issue_date'''
+        
+        contents.append(voter_prompt)
+        
+        # Generate content
+        config = types.GenerateContentConfig(temperature=0, max_output_tokens=2048)
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=contents, config=config)
+        
         # Cleanup
         os.unlink(tmp_cred_path)
-        
         return response.text
-
+        
     except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
-        if os.path.exists(tmp_cred_path):
+        if 'tmp_cred_path' in locals() and os.path.exists(tmp_cred_path):
             os.unlink(tmp_cred_path)
+        st.error(f"Processing error: {str(e)}")
         return None
 
-# --- Application Flow ---
-
+# Login Screen
 def login_screen():
-    st.title("Login")
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submit = st.form_submit_button("Login")
+    st.title("🆔 Voter ID Extractor")
+    st.markdown("**Upload Voter ID images and extract information automatically**")
+    
+    with st.form("login"):
+        username = st.text_input("👤 Username", placeholder="admin")
+        password = st.text_input("🔒 Password", type="password", placeholder="password123")
+        login_btn = st.form_submit_button("🚀 Login", type="primary")
         
-        if submit:
+        if login_btn:
             if username == DUMMY_USER and password == DUMMY_PASS:
                 st.session_state.logged_in = True
                 st.rerun()
             else:
-                st.error("Invalid credentials")
+                st.error("❌ Invalid credentials!")
 
+# Main Application
 def main_app():
-    st.title("Voter ID Information Extractor")
-    st.write(f"Welcome, {DUMMY_USER}")
+    st.title("🆔 Voter ID Information Extractor")
     
-    if st.button("Logout"):
-        st.session_state.logged_in = False
-        st.rerun()
-
-    st.markdown("---")
-
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("1. Upload Credentials")
-        cred_file = st.file_uploader("Upload user-credential.json", type=['json'])
-
+    # Logout button
+    col1, col2, col3 = st.columns()[1]
     with col2:
-        st.subheader("2. Upload Voter ID Images")
+        if st.button("🚪 Logout", type="secondary"):
+            st.session_state.logged_in = False
+            st.rerun()
+    
+    st.markdown("---")
+    
+    # File Upload Section
+    col_cred, col_img = st.columns()[2][1]
+    
+    with col_cred:
+        st.subheader("📁 1. Upload Credentials")
+        cred_file = st.file_uploader("user-credential.json", type="json")
+    
+    with col_img:
+        st.subheader("📸 2. Upload Images")
         uploaded_images = st.file_uploader(
-            "Upload Front and Back images (Max 2)", 
-            type=['jpg', 'jpeg', 'png'], 
+            "Voter ID Front + Back (Max 2)", 
+            type=['jpg','jpeg','png'], 
             accept_multiple_files=True
         )
-
-    start_process = st.button("Start Extraction Process", type="primary")
-
-    if start_process:
-    if not cred_file:
-        st.warning("Please upload the credential JSON file.")
-    elif not uploaded_images or len(uploaded_images) > 2:
-        st.warning("Please upload exactly 1 or 2 images.")
-    else:
-        with st.spinner("Processing images with Gemini..."):
-            raw_response = process_images(cred_file, uploaded_images)
-            
-            if raw_response:
-                cleaned_text = clean_json_response(raw_response)
-                try:
-                    json_data = json.loads(cleaned_text)
-                    
-                    st.success("✅ Extraction Complete!")
-                    
-                    # ========================================
-                    # NEW USER-FRIENDLY FORM DISPLAY
-                    # ========================================
-                    st.markdown("---")
-                    st.markdown("## 🔍 **Verify Extracted Voter Details**")
-                    st.markdown("*Edit if needed and approve for download*")
-                    
-                    # Create form container
-                    with st.container():
-                        # Row 1: Election Number + Name
-                        col1, col2 = st.columns([1.2, 1.8])
+    
+    # Process Button
+    if st.button("🔍 **START EXTRACTION**", type="primary", use_container_width=True):
+        if not cred_file:
+            st.warning("⚠️ Please upload credential JSON")
+        elif not uploaded_images or len(uploaded_images) > 2:
+            st.warning("⚠️ Upload exactly 1-2 images")
+        else:
+            with st.spinner("🤖 Analyzing with Gemini AI..."):
+                raw_response = process_images(cred_file, uploaded_images)
+                
+                if raw_response:
+                    cleaned = clean_json_response(raw_response)
+                    try:
+                        json_data = json.loads(cleaned)
                         
-                        with col1:
-                            st.markdown("**📄 Election Number** *")
-                            election_number = st.text_input(
-                                "",
-                                value=json_data.get("election_number", "SVF9770827"),
-                                key="election_num_input",
-                                placeholder="Enter EPIC Number"
+                        st.success("✅ **Extraction Complete!**")
+                        
+                        # ========================================
+                        # USER-FRIENDLY EDITABLE FORM
+                        # ========================================
+                        st.markdown("---")
+                        st.markdown("### 🔍 **Verify & Edit Extracted Details**")
+                        st.markdown("*Review accuracy and edit if needed*")
+                        
+                        # Row 1: Election + Name
+                        r1_c1, r1_c2 = st.columns([1.2, 1.8])
+                        with r1_c1:
+                            st.markdown("**📄 Election Number**")
+                            election_num = st.text_input(
+                                "", value=json_data.get("election_number", ""),
+                                key="elec_num"
                             )
-                        
-                        with col2:
-                            st.markdown("**👤 Voter Name** *")
+                        with r1_c2:
+                            st.markdown("**👤 Voter Name**")
                             voter_name = st.text_input(
-                                "",
-                                value=json_data.get("name", "RAM BISWAL BISWAL"),
-                                key="voter_name_input",
-                                placeholder="Enter Full Name"
+                                "", value=json_data.get("name", ""),
+                                key="voter_name"
                             )
                         
                         # Row 2: Relation + Gender + DOB
-                        col_rel, col_gender, col_dob = st.columns([1.5, 0.8, 1.2])
-                        
-                        with col_rel:
-                            st.markdown("**👨‍👩‍👧 Relation Name**")
-                            relation_name = st.text_input(
-                                "",
-                                value=json_data.get("relation_name", "SWIKRUTI DHAL DHAL"),
-                                key="relation_input",
-                                placeholder="Father/Husband/Wife Name"
+                        r2_c1, r2_c2, r2_c3 = st.columns([1.4, 0.9, 1.1])
+                        with r2_c1:
+                            st.markdown("**👨‍👩‍👦 Relation**")
+                            relation = st.text_input(
+                                "", value=json_data.get("relation_name", ""),
+                                key="relation"
+                            )
+                        with r2_c2:
+                            st.markdown("**⚧️ Gender**")
+                            gender_opts = ["Male", "Female", "Other"]
+                            gender = st.selectbox(
+                                "", options=gender_opts,
+                                index=gender_opts.index(json_data.get("gender", "Male")),
+                                key="gender_sel"
+                            )
+                        with r2_c3:
+                            st.markdown("**🎂 DOB**")
+                            dob = st.text_input(
+                                "", value=json_data.get("date_of_birth", ""),
+                                key="dob"
                             )
                         
-                        with col_gender:
-                            st.markdown("**⚧️ Gender** *")
-                            gender_options = ["Male", "Female", "Other"]
-                            selected_gender = st.selectbox(
-                                "",
-                                gender_options,
-                                index=gender_options.index(json_data.get("gender", "Male")),
-                                key="gender_input"
-                            )
+                        # Address
+                        st.markdown("**🏠 Address Information**")
+                        addr_col1, addr_col2, addr_col3, addr_col4 = st.columns([2.2, 1, 1, 0.8])
                         
-                        with col_dob:
-                            st.markdown("**🎂 Date of Birth** *")
-                            date_of_birth = st.text_input(
-                                "",
-                                value=json_data.get("date_of_birth", "28-05-1986"),
-                                key="dob_input",
-                                placeholder="DD-MM-YYYY"
-                            )
-                        
-                        # Address Section
-                        st.markdown("---")
-                        st.markdown("**🏠 Address Details**")
-                        
-                        address_cols = st.columns([2.5, 1, 1, 0.8])
-                        
-                        full_address = st.text_area(
-                            "Complete Address",
-                            value=json_data.get("address", "001, GUNJUR, BANGALORE EAST, GUNJUR, BANGALORE URBAN, KARNATAKA-560087"),
-                            height=60,
-                            key="address_input",
-                            help="Full address as per Voter ID"
+                        address = st.text_area(
+                            "Full Address", 
+                            value=json_data.get("address", ""),
+                            height=55, key="address_full"
                         )
                         
-                        with address_cols[0]:
-                            pass  # Spacer
-                        with address_cols[1]:
-                            city = st.text_input(
-                                "City",
-                                value=json_data.get("city", "BANGALORE"),
-                                key="city_input"
-                            )
-                        with address_cols[2]:
-                            state = st.text_input(
-                                "State",
-                                value=json_data.get("state", "KARNATAKA"),
-                                key="state_input"
-                            )
-                        with address_cols[3]:
-                            pincode = st.text_input(
-                                "Pincode",
-                                value=json_data.get("pincode", "560087"),
-                                key="pincode_input"
-                            )
+                        with addr_col2:
+                            city = st.text_input("City", value=json_data.get("city", ""), key="city")
+                        with addr_col3:
+                            state = st.text_input("State", value=json_data.get("state", ""), key="state")
+                        with addr_col4:
+                            pincode = st.text_input("Pin", value=json_data.get("pincode", ""), key="pin")
                         
-                        # Additional Info
-                        st.markdown("**📋 Additional Information**")
-                        add_col1, add_col2 = st.columns([2, 1])
-                        
-                        with add_col1:
+                        # Additional
+                        st.markdown("**📋 Other Details**")
+                        add_c1, add_c2 = st.columns(2)
+                        with add_c1:
                             ero = st.text_input(
-                                "Electoral Registration Officer",
-                                value=json_data.get("electoral_registration_officer", "Electoral Registration Officer, 174 Mahadevapura (SC)"),
-                                key="ero_input"
+                                "Electoral Officer",
+                                value=json_data.get("electoral_registration_officer", ""),
+                                key="ero"
                             )
-                        
-                        with add_col2:
+                        with add_c2:
                             issue_date = st.text_input(
-                                "Issue Date",
-                                value=json_data.get("issue_date", "21-04-2023"),
-                                placeholder="DD-MM-YYYY",
-                                key="issue_date_input"
+                                "Issue Date", value=json_data.get("issue_date", ""),
+                                key="issue"
                             )
                         
                         # Action Buttons
                         st.markdown("---")
-                        col_approve, col_reset, col_raw = st.columns([1, 1, 1])
+                        btn_col1, btn_col2, btn_col3 = st.columns(3)
                         
-                        with col_approve:
-                            if st.button("✅ **APPROVE & DOWNLOAD PDF**", type="primary", use_container_width=True):
-                                # Collect all edited data
-                                verified_data = {
-                                    "election_number": election_number,
+                        with btn_col1:
+                            if st.button("✅ **APPROVE & DOWNLOAD**", type="primary"):
+                                final_data = {
+                                    "election_number": election_num,
                                     "name": voter_name,
-                                    "relation_name": relation_name,
-                                    "gender": selected_gender,
-                                    "date_of_birth": date_of_birth,
-                                    "address": full_address,
+                                    "relation_name": relation,
+                                    "gender": gender,
+                                    "date_of_birth": dob,
+                                    "address": address,
                                     "city": city,
                                     "state": state,
                                     "pincode": pincode,
@@ -361,37 +283,41 @@ def main_app():
                                     "issue_date": issue_date
                                 }
                                 
-                                # Generate and download PDF
-                                pdf_buffer = create_pdf(verified_data)
+                                pdf_buf = create_pdf(final_data)
                                 st.download_button(
-                                    label="📥 Download PDF Report",
-                                    data=pdf_buffer.getvalue(),
-                                    file_name="verified_voter_id_report.pdf",
-                                    mime="application/pdf",
-                                    use_container_width=True
+                                    "📥 PDF Report",
+                                    pdf_buf.getvalue(),
+                                    "voter_id_report.pdf",
+                                    "application/pdf"
                                 )
                                 
-                                # JSON Download
-                                json_str = json.dumps(verified_data, indent=2)
+                                json_str = json.dumps(final_data, indent=2)
                                 st.download_button(
-                                    label="💾 Download JSON",
-                                    data=json_str,
-                                    file_name="verified_voter_id.json",
-                                    mime="application/json",
-                                    use_container_width=True
+                                    "💾 JSON Data",
+                                    json_str,
+                                    "voter_id_data.json",
+                                    "application/json"
                                 )
-                                
                                 st.balloons()
-                                st.success("✅ **Report generated successfully!**")
                         
-                        with col_reset:
-                            if st.button("🔄 Re-extract", use_container_width=True):
+                        with btn_col2:
+                            if st.button("🔄 Re-extract"):
                                 st.rerun()
                         
-                        with col_raw:
-                            if st.button("📋 Show Raw JSON", use_container_width=True):
+                        with btn_col3:
+                            if st.button("📋 Raw JSON"):
                                 st.code(json.dumps(json_data, indent=2))
                                 
-                except json.JSONDecodeError:
-                    st.error("❌ Failed to parse Gemini response as JSON.")
-                    st.text_area("Raw Response:", raw_response)
+                    except:
+                        st.error("JSON Parse Error")
+                        st.text_area("Raw:", raw_response)
+
+# Main App Flow
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+    login_screen()
+    st.info("💡 **Demo:** admin / password123")
+else:
+    main_app()
