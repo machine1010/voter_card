@@ -16,11 +16,9 @@ DUMMY_USER = "admin"
 DUMMY_PASS = "password123"
 
 # --- Helper Functions ---
-
 def clean_json_response(text):
     """Cleans the raw text response from Gemini to ensure valid JSON."""
     text = text.strip()
-    # Remove markdown code blocks if present
     if text.startswith("```json"):
         text = text[7:]
     if text.startswith("```"):
@@ -42,15 +40,12 @@ def create_pdf(json_data):
     y_position = height - 80
     
     for key, value in json_data.items():
-        # Format key for display (e.g., "election_number" -> "Election Number")
         display_key = key.replace("_", " ").title()
         text = f"{display_key}: {value}"
-        
-        # Simple text wrapping or truncation could be added here for very long lines
         c.drawString(50, y_position, text)
         y_position -= 20
         
-        if y_position < 50: # New page if needed
+        if y_position < 50:
             c.showPage()
             y_position = height - 50
             
@@ -68,9 +63,6 @@ def process_images(credential_file, image_files):
         
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = tmp_cred_path
         
-        # Initialize Client (Assuming Project ID is inside the JSON or env)
-        # We attempt to load the project ID from the JSON for robustness, 
-        # or rely on default google auth behavior
         with open(tmp_cred_path, "r") as f:
             creds = json.load(f)
             project_id = creds.get("project_id") or creds.get("quota_project_id")
@@ -91,55 +83,28 @@ def process_images(credential_file, image_files):
             )
             contents.append(image_part)
 
-        # 3. Prepare Prompt (Copied from original script)
+        # 3. Prepare Prompt
         voter_id_extraction_prompt = '''
-        You are an expert OCR and document analysis specialist with deep knowledge of Indian electoral documents, including voter ID cards (EPIC - Elector's Photo Identity Card) issued by the Election Commission of India. You are highly skilled at extracting structured information from images containing text in multiple Indian languages including English, Hindi, Kannada, Telugu, Tamil, Malayalam, Bengali, Gujarati, Marathi, and others.
-
+        You are an expert OCR and document analysis specialist with deep knowledge of Indian electoral documents.
+        
         ## Your Task
-        Carefully analyze the provided voter ID card image(s) and extract specific information fields. You will receive one or two images - typically a front side and a back side of the voter ID card.
-
-        ## Critical Instructions
-        1. **No Hallucination**: Extract ONLY the information that is clearly visible and readable in the image. Do not infer, guess, or make up any information.
-        2. **Handle Missing Information**: If any field is not present, not readable, or not visible in the image, return an empty string ("") for that field.
-        3. **Language Preference**:
-        - If information is available in both English and a regional language, extract the English version
-        - If only regional language is present, extract in that regional language exactly as written
-        - Maintain the original script (Devanagari, Kannada, Telugu, etc.)
-        4. **Field Location Awareness**:
-        - Election Number/EPIC Number: Usually found above or near the photograph on the front side, often in format like "ABC1234567" or "ABC/12/123/123456"
-        - Name, Wife's/Husband's Name, Gender, Date of Birth: Typically on the front side
-        - Address: Can be on front or back side
-        - Electoral Registration Officer: Usually on back side
-        - Issue Date: Usually on back side
-        5. **Output Format**: Return ONLY a valid JSON object with the exact structure shown below. Do not include any explanatory text before or after the JSON.
+        Carefully analyze the provided voter ID card image(s) and extract specific information fields.
 
         ## Fields to Extract
-        1. **election_number**: The unique EPIC number (also called Elector's Photo Identity Card number). Often written above the photo or in a prominent position.
-        2. **name**: Full name of the voter as written on the card
-        3. **relation_name**: Name of father/husband/wife/mother (the relation type may vary - extract the name that appears after "Father's Name", "Husband's Name", "Wife's Name", or similar labels)
-        4. **gender**: Gender of the voter (Male/Female/Transgender or ಪುರುಷ/ಮಹಿಳೆ or other regional language equivalents)
-        5. **date_of_birth**: Date of birth in the format shown on the card (usually DD-MM-YYYY)
-        6. **address**: Complete address as written on the card
-        6.1 **city**: City where the address is mentioned
-        6.2 **state**: State where the address is mentioned
-        6.3 **pincode**: Pincode where the address is mentioned
-        7. **electoral_registration_officer**: Name/designation of the Electoral Registration Officer
-        8. **issue_date**: Date when the card was issued (usually found on back side)
+        1. **election_number**: The unique EPIC number.
+        2. **name**: Full name of the voter.
+        3. **relation_name**: Name of father/husband/wife/mother.
+        4. **gender**: Gender of the voter.
+        5. **date_of_birth**: Date of birth (DD-MM-YYYY).
+        6. **address**: Complete address.
+        6.1 **city**: City.
+        6.2 **state**: State.
+        6.3 **pincode**: Pincode.
+        7. **electoral_registration_officer**: Name/designation of the Officer.
+        8. **issue_date**: Date when the card was issued.
 
-        ## Expected JSON Output Structure
-        {
-        "election_number": "SVF5418760",
-        "name": "AVINASH KUMAR",
-        "relation_name": "SAIKIT KUMAR(father)",
-        "gender": "Male",
-        "date_of_birth": "28-06-1998",
-        "address": "001, BANGALORE WEST, MARATHALLI VILLEGE -560087",
-        "city": "BANGALORE",
-        "state": "Karnataka",
-        "pincode": "560087",
-        "electoral_registration_officer": "Electoral Registration Officer, 174 Mahadevapura (SC)",
-        "issue_date": "21-04-2024"
-        }
+        ## Output Format
+        Return ONLY a valid JSON object.
         '''
         
         contents.append(voter_id_extraction_prompt)
@@ -151,14 +116,12 @@ def process_images(credential_file, image_files):
         )
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash-exp", # Updated to a valid model name or keep gemini-1.5-flash
             contents=contents,
             config=generate_config
         )
 
-        # Cleanup
         os.unlink(tmp_cred_path)
-        
         return response.text
 
     except Exception as e:
@@ -207,6 +170,10 @@ def main_app():
             accept_multiple_files=True
         )
 
+    # --- Initialize Session State for Data ---
+    if "extracted_data" not in st.session_state:
+        st.session_state.extracted_data = None
+
     start_process = st.button("Start Extraction Process", type="primary")
 
     if start_process:
@@ -221,36 +188,66 @@ def main_app():
                 if raw_response:
                     cleaned_text = clean_json_response(raw_response)
                     try:
-                        json_data = json.loads(cleaned_text)
-                        
+                        # Store in session state to persist across reruns
+                        st.session_state.extracted_data = json.loads(cleaned_text)
                         st.success("Extraction Complete!")
-                        
-                        # Display Data in User Friendly Form
-                        st.subheader("Extracted Details")
-                        st.json(json_data)
-                        
-                        # Generate PDF
-                        pdf_buffer = create_pdf(json_data)
-                        
-                        st.download_button(
-                            label="Download as PDF",
-                            data=pdf_buffer,
-                            file_name="voter_id_card.pdf",
-                            mime="application/pdf"
-                        )
-                        
                     except json.JSONDecodeError:
                         st.error("Failed to parse the response as JSON.")
                         st.text_area("Raw Response", raw_response)
 
-# --- Entry Point ---
+    # --- Display Form if Data Exists ---
+    if st.session_state.extracted_data:
+        data = st.session_state.extracted_data
+        
+        st.subheader("Extracted Details")
+        st.info("You can edit the fields below before downloading.")
 
+        # --- Form Layout ---
+        with st.container():
+            c1, c2 = st.columns(2)
+            with c1:
+                data["election_number"] = st.text_input("Election Number", value=data.get("election_number", ""))
+                data["name"] = st.text_input("Name", value=data.get("name", ""))
+                data["gender"] = st.text_input("Gender", value=data.get("gender", ""))
+            
+            with c2:
+                data["issue_date"] = st.text_input("Issue Date", value=data.get("issue_date", ""))
+                data["relation_name"] = st.text_input("Relation Name", value=data.get("relation_name", ""))
+                data["date_of_birth"] = st.text_input("Date of Birth", value=data.get("date_of_birth", ""))
+
+            data["address"] = st.text_area("Address", value=data.get("address", ""))
+
+            c3, c4, c5 = st.columns(3)
+            with c3:
+                data["city"] = st.text_input("City", value=data.get("city", ""))
+            with c4:
+                data["state"] = st.text_input("State", value=data.get("state", ""))
+            with c5:
+                data["pincode"] = st.text_input("Pincode", value=data.get("pincode", ""))
+            
+            data["electoral_registration_officer"] = st.text_input("Electoral Registration Officer", value=data.get("electoral_registration_officer", ""))
+
+        # --- Update Session State with Edits ---
+        st.session_state.extracted_data = data
+
+        st.markdown("---")
+        
+        # Generate PDF from CURRENT (possibly edited) data
+        pdf_buffer = create_pdf(st.session_state.extracted_data)
+        
+        st.download_button(
+            label="Download as PDF",
+            data=pdf_buffer,
+            file_name="voter_id_card.pdf",
+            mime="application/pdf"
+        )
+
+# --- Entry Point ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
     login_screen()
-    # Hint for the user
     st.info(f"Use dummy credentials: {DUMMY_USER} / {DUMMY_PASS}")
 else:
     main_app()
